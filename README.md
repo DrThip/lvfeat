@@ -1,15 +1,18 @@
 # lvfeat
-This program is SuperMongo code to plot various features in Milky Way longitude-velocity (lV), longitude-distance (ld), or Galactic Cartesian (XY) diagrams.
-This is often desirable in various astrophysical studies of the large-scale structure of the Milky Way.
-The program details are largely documented in the code itself.  This README provides an overview.
-First, you need access to a local installation of SuperMongo by Robert Lupton & Patricia Monger, eg from https://www.astro.princeton.edu/~rhl/sm/
-SuperMongo is not free, but many academic and research institutions have already installed site licenses, which means that if you're a student or employee and you have an institutional account, you probably already have access to SM.  Otherwise, you can go to the SM website and buy yourself a personal copy of the software.
+This program is SuperMongo code to plot various features in Milky Way longitude-velocity (lV), longitude-distance (ld), or Galactic Cartesian (XY) diagrams.  This is often desirable in various astrophysical studies of the large-scale structure of the Milky Way.  The program details are largely documented in the code itself.  This README provides an overview.
+
+First, you need access to a local installation of SuperMongo by Robert Lupton & Patricia Monger, eg from https://www.astro.princeton.edu/~rhl/sm/   SuperMongo is not free, but many academic and research institutions have already installed site licenses, which means that if you're a student or employee and you have an institutional account, you probably already have access to SM.  Otherwise, you can go to the SM website and buy yourself a personal copy of the software.
+
 SM code typically works by reading in some data from a plain text (ie, ASCII) file, processing this data in some fashion using the built-in SM commands and macros or your own SM code, and drawing the raw or derived data as some kind of line plot.  You can do this interactively in the SM command-line interface, or at the operating system command line.  SM is attractive because it already has a lot of built-in functionality and has a relatively simple syntax, so you can easily manipulate data "vectors" and plot features to produce nice, publication-quality diagrams.  Importantly, it is also scriptable, so when you're ready to do something more advanced, SM can help with that too, as you can see in the various subprograms included in lvfeat.
+
 For example, in unix/linux, you might enter
 
 $ sm -m $CODEROOT/program.sm input1 input2 input3
 
 which executes 'program.sm' as an SM "macro" located in the user-defined directory '$CODEROOT', and using the 3 input parameters as written.  Here, 'sm' is the actual SM binary located in a standard installation directory and included in the user's *nix $path environment.  If in doubt, consult your local sysadmin for info.
+
 To use lvfeat.sm, you should also read the embedded comments (especially the header block) to figure out what kind of plot you want to make.  The execution is then pretty fast, typically a few seconds on most modern *nix systems, and will generate at least 1 encapsulated postscript (EPS) plot file such as 'feature.eps'.  (Such plot files can also be easily translated into other formats, such as jpeg, png, or whatever, by the usual *nix tools.)
+
 Optionally, lvfeat can also produce "annotations" files (suffix *.ann), for use with the kvis image visualisation program (part of the Karma package).  These annotations files are a handy way to overlay simple line plots or notes onto an image in the kvis display window.
+
 As part of the computation of the various features in the above diagrams, the user can choose different models of Galactic rotation and their various parameters, such as specific values for the Galactic scale factors R0 and Theta0, a Persic-style Universal Rotation Curve, or an LSR-to-GSR scale function.  See the embedded comments, and also Barnes et al 2025 ApJS 280 31, for more details on these options.

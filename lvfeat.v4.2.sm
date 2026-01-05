@@ -1,0 +1,713 @@
+	# Plot MW longitude-velocity or -distance features to overlay across mole-
+	# cular line data.  Adapted from lv routine for CHaMP data in clouds.sm.
+	# For main program lvfeat, inputs are:
+	#
+	# $1 chooses what information to plot: spiral arms 's/3k/N/S/C/B/Br',
+	#	heliocentric contours 'h', the tangent point velocity/distance
+	#	't', or an xy grid 'x'.  Helio+tangent+xy curves self-scale,
+	#	named spiral arms are defaulted, see below for custom spirals.
+	# $2 (two characters) optionally chooses how this info is plotted:
+	#	1st char = 'v' for an lV diagram (default), 'd' for ld, 'y' for
+	#		YX (BEWARE: convention is x=-Y,y=X);
+	#	2nd char = 1-4 for Galactic Quadrants (default 4);
+	#	combined default = v4, produces lV plots for the 4Q
+	# $3 chooses whether to also write the corresponding .ann file(s): 0 = no,
+	#	*eps plot only (default); 1 = yes.  For Q3-4 and l* diagrams, a
+	#	longitude-wrapped .ann file will also be written for Q1-2 merging.
+	# $4 chooses the kinematic model: 'i/b/g/v/*t/*f' for IAU, BeSSeL, Gaia,
+	#	VERA, ThrUMMS, or FUGIN respectively, where * is one of b,g,v.
+	#	Models g,v are actually modifiers to b; *t or *f modifies any *.
+	#	So allowed inputs i,b,g,v,bt,gt,vt,bf,gf,vf ==> i,b,bg,bv,bt,bgt,
+	#	bvt,bf,bgf,bvf respectively.  The default is gt ==> bgt.  Includes
+	#	additional correction on a sliding scale from d=0 to R0, to allow
+	#	for change in non-circular motions from local-clouds' LSR to true
+	#	Global Std of Rest (GSR) based on ensemble of tangent velocities.
+	#	Set scale=1 @Sun, =0 @d=2kpc, =-0.5 @R0 (incl GC); see scalefn.
+	# $5 chooses the rotation curve: 'u/f' for URC (default) or flat.
+	#
+	# Some spiral arms optionally need 3-4 more parameters:
+	#    Custom, type s --
+	# $6 => rr0 (kpc)	radius		\ starting coords of spiral,
+	# $7 => bt0 (degrees)	azimuth		/ typically bt0=0 for ThrUMMS
+	# $8 => psi0 (degrees)	spiral pitch angle
+	#    Barred, types B/Br, assumed to start at rr0=1kpc with psi0=85deg.  Then,
+	# $6,$9 => rrin,rrout (kpc) radius	\ start,end radius of pitch angle drop
+	# $7 => bt0 (degrees)	azimuth		/ starting beta " " " "; eg, 50
+	# $8 => pstep (degrees)	pitch angle |DECREASE| between rrin,rrout; eg, 1.38
+	#
+	# Contains:--
+	#	main program lvfeat (lines 52-238);
+	#	rnglab  (239-) sets scales for all diagram types;
+	#	kinmod  (267-) sets scales for all diagram types;
+	#	spirlab (301-) sets up basic spiral parameters;
+	#	rblvd   (328-) heavy lifting for rr0,bt0,psi0 to r,beta,l,v,d conversions;
+	#	helio   (428-)	"	"	 d to V/xy conversions;
+	#	xylv    (505-)	"	"	 lV to xy conversions; and
+	#	annwrt  (597-) writes .ann files according to $3.
+	#
+	# Also utility scripts: plurc(609-) plots standard Universal Rotation Curve
+	# using gourc(628-); a scalefn(666-) plot; and pltsp (695-714) plots barred
+	# spiral parameters.
+
+lvfeat 9 # Process inputs: plot+diagram types, write ann?, Kmodel, rotcurve
+	if (!$?1) {echo Should input h/s/3k/N/S/C/B/Br/t/x for hel/sp/tang/xy curves
+		quit}		# For recognised plots, get diagram type & defaults
+	define dospir ('$1'=='s'||'$1'=='3k'||'$1'=='N'||'$1'=='S'||'$1'=='C'||'$1'=='B'||'$1'=='Br')
+	if ( $dospir || '$1'=='h' || '$1'=='t' || '$1'=='x') {
+		if($?2) {define diag    (substr('$2',0,1))	if (strlen('$2')>1) {
+			define quad (int(substr('$2',1,1)))	}else{ define quad 4 }
+		}else{	define diag ('v')			define quad 4}
+		# diag+quad become "environment variables" hereafter
+	} else {echo Unrecognised plot option $1\n		quit }
+	if ('$1'=='h' && '$diag'=='y') {define noplot 1} else {define noplot 0}
+	if (('$diag'=='v' || '$diag'=='d' || '$diag'=='y') && $quad>0 && $quad<5) {
+		} else {echo Unrecognised diagram type $diag$quad\n		quit}
+	# Get instructions for .ann file, kmodel, rotation curve
+	if ($?3) {define doann $3} else {define doann 0}
+	if ($?4) {define kin ('$4')} else {define kin ('gt')}
+	if ($?5) {if ('$5'=='f') {define grc ('flat')
+			  } else {define grc ('URC')}}	else {define grc ('URC')}
+	define codedir ('/Users/peterb/data/otfsuite')		# for mac
+	re "$!codedir/comp.sm"					# for round script
+	#
+	# Set Solar Motion options, km/s (Reid+2019, Bobylev2023, Oyama+2024)
+	# IAU defines standard LSR & other starting values:
+	define Uo 10.27	define Vo 15.32	define Wo 7.74	# original IAU SM
+	define Un $Uo	define Vn $Vo	define Wn $Wo	# new = old, for starters
+	define Up 0	define Vp 0	define Wp 0	# no extra
+	# Solar Motion scalefn tapers non-IAU corrections: preferred values.  Use
+	define sfs 2.25		define sfn 0.5		# sfs=0 to turn off taper.
+	round $sfs 2 stS	round $sfn 2 stnn	# kinmod sets labels, n+p
+	kinmod $kin km klabel Un Vn Wn Up Vp Wp		# modifiers. & k1/k2 sub-
+	# strings as EVs.  Total modified Solar Motion for [IAU/BeSSeL]+ThrUMMS is ...
+	define Umod ($Un+$Up)	define Vmod ($Vn+$Vp)	define Wmod ($Wn+$Wp)
+	# Net SM change from IAU (all 0 if km=iau) ...
+	define Unet ($Umod-$Uo)	define Vnet ($Vmod-$Vo)	define Wnet ($Wmod-$Wo)
+	# Finally set Galaxy Scales: next line gives defaults for k1 = i or b.
+	define R0 8.15	define TH0 (270-$Vmod)	# R+19, used also for IAU, 247
+	if ('$k1'=='g') {define R0 8.24  define TH0 (268-$Vmod)}	# new GS Bob23
+	if ('$k1'=='v') {define R0 8.547 define TH0 (30.30*$R0-$Vmod)}	# new GS O+24
+	#
+	# Set up plot scale & styles; the 3 diagram types have different x&y ranges
+	define lhi ($quad*90)	define llo ($lhi-90)	# These are now EVs;
+	rnglab $1 $diag $quad xlo xhi ylo yhi ftyp suff	#-> uses its own spirlab call
+	# Announce setup, prepare plot			# to get desc -> an EV too
+	round $R0 2 stR0	round $TH0 2 stTH0	# for labels
+	round $Umod 2 stU0	round $Vmod 2 stV0	round $Wmod 2 stW0
+	if ($quad==1) {define qstr ('1st')}\n	if ($quad==2) {define qstr ('2nd')}
+	if ($quad==3) {define qstr ('3rd')}\n	if ($quad==4) {define qstr ('4th')}
+	echo Will use $grc rotation curve with R0 = $stR0 kpc, Theta0 = $stTH0 km/s,
+	echo and solar motion (U0,V0) = $stU0,$stV0 km/s ($klabel model),
+	if ($sfs==0) {echo with no taper} else {
+		echo but tapered to GSR with scale function S=$sfs, n=$sfn}\n	echo " "
+	define pref ('$ftyp.$grc'+'$km')	# full filename prefix; suff contains diag/quad
+	if('$diag'=='y') {dev postportfile $pref.$suff.eps\n	#location 5800 28700 3500 31000
+		} else {  dev postlandfile $pref.$suff.eps\n	#location 3500 31000 7600 27200
+	} ptype 4 1	ctype 0	ltype 0	lweight 2	era	ex 0.9	ticksize 0 0 0 0
+	limits $xhi $xlo $ylo $yhi  box	ex 0.7	# limits ex rnglab above; vectors would add padding
+	#
+	# Set labels, fractional label coords, counters, limits, l vectors...
+	define tlee ('(\\gQ\\\\d0-$grc\\\\u, \\iU\\d0, \\iV\\d0)')
+	define llab 0.83	define ci -1		# for colours
+	define vlab 0.38	define ds ('-0.3')	# helio start label, eg '-0.3'
+	# Extrema for all quadrants
+	define di (atof($ds))	define dmax 20		# helio start,end
+	define Ymin (-12)	define Ymax 12		# X,Y counting out from ~0
+	define Xmin (-12)	define Xmax 18		## uncomment for test plots
+	if ($quad==2 || $quad==3) {define dmax 12} \n	## define dmax 1
+	set lll = $llo,$lhi,0.4		# 0.4-degree increments for v/d/Y diagrams;
+	# any smaller and the ann files get >~250 lines long, killing kvis.
+	set lrad = lll*pi/180	define diml (dimen(lll))	# radians
+	#
+	# PLOT OPTIONS FOLLOW.  All V or d curves are fundamentally functions of
+	# l, except for spirals, where curves are functions of beta, and l,r are
+	# derived along with V & d.
+	#
+	# 1. A SINGLE spiral arm.  Defined by vectors of Galactocentric distance
+	# rr and azimuth beta, where beta=0 along l=0 (angles input in degrees),
+	# plus a pitch angle psi0.  Use these to compute heliocentric distances etc
+	# at a set of azimuths across the 4Q.
+	# The default rr0,bt0,psi0 are for the Norma arm, used as generic when $1
+	# = s.  Can also use different defaults for the 3kpc arm ($1=T), Scutum-
+	# Centaurus ($1=S), Sagittarius-Carina ($1=C) from Reid+2019, or an S-
+	# shaped barred spiral ($1=B/Br).  To override, use $1=s and specify $6-$8;
+	# also specify $6-$9 for $1=B/Br.  The rw are arm widths from R+19, typically
+	# ~4-5%.
+	if ($dospir) { # First define the default spiral parameters, the last 2 in
+		spirlab $1 name clr desc rw ci rr0 bt0 psi0		# radians
+		# More defaults/definitions to plot ANY spiral
+		if ('$1'=='s') { # OVERWRITE spirlab defaults if custom inputs
+		    if ($?6) {define rr0 $6}\n	if ($?7) {define bt0 ($7*pi/180)}
+						if ($?8) {define psi0 ($8*pi/180)} }
+		# bt0 can also be a very small -ve no., eg -pi/180000=-0.001deg
+		if ('$1'=='B'||'$1'=='Br') { # Bar-flattening parameters
+		    if ($?6) {define rrin $6}\n   if ($?7) {define bt0 ($7*pi/180)}
+		    if ($?9) {define rrout $9}\n  if ($?8) {define pstep ($8*pi/180)}
+		    if (!($?6||$?7||$?8||$?9)) {echo Bar parameters defaulted-- see plot
+			# for rblvd defaults used (rrin,rrout,pstep) if not set here.
+			# Note that rrin = rr0 always, whether default or custom.
+			}else{	echo Bar parameters $rrin $rrout $bt0 $pstep} }
+		if (!$?rr0) {define rr0 $rrin}\n	if (!$?rrin) {define rrin $rr0}
+				round $rr0 2 sr0	round $($bt0*180/pi) 0 sb0
+		if ($?rrout) {round $rrout 2 sro}\n	round $($psi0*180/pi) 2 spsi0
+		if ('$desc'=='s') {define desc ('spiral$sr0:$sb0:$spsi0')}  #echo $desc
+		ctype $ci	define Alabel ('$desc.$grc'+'$km.$suff')
+		echo Plot $suff curves for $name spiral arm in $!qstr Quadrant
+		if ($doann) {echo ...and write $Alabel(.wr).ann & inner+outer edges}
+		# Here, rblvd converts r0,bt0,psi0 of the spiral to r,beta,l,V,d,Y,X,
+		# then plots it and (optionally) writes 3 ann files, keeping the same
+		# colour in all.
+		rblvd $1 $R0 $TH0 $Unet $Vnet $diag $Alabel '$clr' rbend
+		define xlpos 0.08	define ylpos 0.95	round $rbend 2 sro
+		fputlabel $xlpos $ylpos 6 $name spiral arm with \iR\d0 = $stR0 kpc and
+	}
+	# 2. Much simpler option to draw curves at a set of fixed heliocentric
+	# distances, counting away by kpc.
+	if ('$1'=='h') { if ('$diag'=='d') {echo OOPS!
+		echo You asked for an ld diagram of d.  Instead...
+		define diag ('v')}
+	    if ('$diag'=='v') { # Add labelling to plot
+		echo Plotting lV curves for heliocentric distances in $!qstr Quadrant,
+		define xlpos 0.17	define ylpos 0.9
+		fputlabel $xlpos $ylpos 6 Heliocentric distances with \iR\d0 = $stR0 kpc and	}
+	    if ('$diag'=='y') {echo NOT plotting heliocentric distances in XY: boring!
+		echo Just making .ann files }
+	    echo from $ds" kpc   to "$dmax" kpc:"		# works for..
+	    helio $ds $dmax $ci $R0 $TH0 lrad $grc $Unet $Vnet	#..any diagram
+	}
+	# 3. Galactic xy grid: guts in xylv
+	if ('$1'=='x') {echo Plotting curves for a Galactic xy cartesian grid in $!qstr Quadrant,
+		if ($quad==4) {echo "with  x in  blue   from  0 to $!Xmax kpc, and"
+				echo "      y in magenta from -0 to $!Ymin kpc."
+			xylv $R0 $TH0 $Unet $Vnet lrad $diag $km $Xmax $Ymin}
+		if ($quad==1) {echo "with  x in  blue   from  0 to $!Xmax kpc, and"
+				echo "      y in magenta from 0 to $!Ymax kpc."
+			xylv $R0 $TH0 $Unet $Vnet lrad $diag $km $Xmax $Ymax}
+		if ($quad==2) {echo "with  x in  blue   from -0 to $!Xmin kpc, and"
+				echo "      y in magenta from  0 to $!Ymax kpc."
+			xylv $R0 $TH0 $Unet $Vnet lrad $diag $km $Xmin $Ymax}
+		if ($quad==3) {echo "with  x in  blue   from -0 to $!Xmin kpc, and"
+				echo "      y in magenta from -0 to $!Ymin kpc."
+			xylv $R0 $TH0 $Unet $Vnet lrad $diag $km $Xmin $Ymin}
+		ctype 0		define xlpos 0.03	define ylpos 0.93
+		fputlabel $xlpos $ylpos 6 Cartesian grid with \iR\d0 = $stR0 kpc and
+	}
+	# 4. Tangent curves Q1+4 only!	T-only  formulae	#   general r
+	if ('$1'=='t') {   ctype 3	# coslaw=>sin(l)	# normal coslaw
+	    if ($quad==2 || $quad==3) {echo No tangent distances in Q2-3!
+	    fputlabel 0.17 0.18 6 No tangent distances in Q2-3! } else {
+	    if ($quad==4) {define dowrap 1	define signV (-1)
+		}else{	define dowrap 0		define signV 1	}
+	    if ('$diag'=='v') {echo Plotting tangent velocity in an lV diagram for $!qstr Quadrant
+		if('$grc'=='flat') {set vvvo=$TH0*($signV-sin(lrad)) # =TH0*sin(l)*(1/coslaw-1)
+		}else{	set rgc = $R0*abs(sin(lrad))		# = R0 * coslaw(l)
+			gourc rgc $R0 $TH0 Vrot			# => Vrot(l)
+			set vvvo = $signV*Vrot-$TH0*sin(lrad) }	# sin(l)*(Vrot/coslaw-TH0)
+		# Scale for LSR vs GSR: 1-Sd/(d+nR0) =+1 @Sun, =0 @l=75/d=2, =-0.5 @GC/d=R0
+		set SMscl = 1-$sfs*cos(lrad)/(cos(lrad)+$sfn)	# S,n optimised from scalefn
+		set vvvn = vvvo - (SMscl)*($Vnet*sin(lrad) + $Unet*cos(lrad))
+		connect lll vvvn   #ctype 4 connect lll vvvo	ctype 5 connect lll ($signV*Vrot)
+		set xann = lll		set yann = vvvn*1000	# kvis coords in m/s
+		ltype 1	rel $lhi 0   dra $llo 0	ltype 0	}	# Vlsr=0 for ref
+	    if ('$diag'=='d') {echo Plotting tangent distance in an ld diagram for $!qstr Quadrant
+		set ddd=$R0*cos(lrad)	connect  lll ddd
+		set xann = lll		set yann = ddd	}
+	    if ('$diag'=='y') {echo Plotting tangent circle in a YX diagram (no wraps) for $!qstr Quadrant
+		set XXX = $R0*(cos(lrad))**2	set YYY = $R0*cos(lrad)*sin(lrad)
+		connect  YYY XXX	set xann=YYY	set yann=XXX	define dowrap 0	}
+	    if ($doann) {define Alabel ('tangent.$grc'+'$km.$suff')
+		echo writing $Alabel(.wr).ann\n	annwrt $Alabel red xann yann $dowrap }
+	    define xlpos 0.17	define ylpos 0.22
+	    fputlabel $xlpos $ylpos 6 Kinematic tangent points with \iR\d0 = $stR0 kpc and }
+	}
+	# Finish the plot	#ex 0.7
+	if ($noplot) {era} else {fputlabel $xlpos $($ylpos-0.04) 6 $tlee = $stTH0, $stU0, $stV0 km/s =
+	    fputlabel $xlpos $($ylpos-0.08) 6 Solar motion from $klabel,
+	    if ($sfs==0) {fputlabel $xlpos $($ylpos-0.12) 6 with no taper} else {
+	    fputlabel $xlpos $($ylpos-0.12) 6 but tapered to GSR with scale f\un \iS=$stS, \in=$stnn}
+	    if ('$1'=='B'||'$1'=='Br') {	round $($pstep*180/pi) 2 step
+		fputlabel $xlpos $($ylpos-0.16) 6 Barred spiral params: \ir\d0 = $sr0 kpc, \gb\d0 = $sb0\s`,
+		fputlabel $($xlpos+.1) $($ylpos-0.2) 6 \gD\gy = -$step\s`/deg until \ir = $sro kpc}
+	    ctype 0	ex 0.9		define xlbl ('Galactic Longitude [degrees]')
+	    if ('$diag'=='v') {define ttyp ('\\sl\\iV')	ylabel \iV\\dLSR\\u [km/s]}
+	    if ('$diag'=='d') {define ttyp ('\\sl\\sd')	ylabel Distance [kpc]}
+	    if ('$diag'=='y') {define ttyp ('\\iX\\iY')	ylabel Galactic-X [kpc]
+				define xlbl ('Galactic-Y [kpc]')}
+	    xlabel $!xlbl\n	ex 1.5	fputlabel 0.5 1.02 8 Milky Way $!ttyp architecture }
+	dev null\n	quit		# BE EXTREMELY CAREFUL!!!! ~185 lines, ~10 spare
+
+rnglab 9 # Define labels/scales/limits for all plots.  3 inputs, 6 outputs:
+	# $1 curve type		# $4 xlo for plot	# $7 yhi for plot
+	# $2 diagram type	# $5 xhi for plot	# $8 file label for $1
+	# $3 quadrant, 1-4	# $6 ylo for plot	# $9 suffix label
+	# First get desc from spirlab to avoid re-deriving file labels
+	if ($dospir) {spirlab $1 name clr desc rw ci rr0 bt0 psi0
+	    if ('$1'=='s') {define $8 ('spiralcstm')} else {define $8 ('$desc')} }
+	if ('$1'=='h') {define $8 ('helio')}
+	if ('$1'=='t') {define $8 ('tangent')}
+	if ('$1'=='x') {define $8 ('xygrid')}
+	# Next treat lV/ld diagrams.  Longitude range for any quadrant, if diagram
+	# is lV or ld, is given by llo,lhi EVs (in degrees, of course):
+	define $4 $llo		define $5 $lhi
+	if('$2'=='v') {		define $6 (-220)	define $7 150	#y=v,Q4 km/s default
+	    if ($3==1) {	define $6 (-100)	define $7 200}	#y=v,Q1
+	    if ($3>1 && $3<4) {	define $6 (-150)	define $7 150}}	#y=v,Q2-3
+	if('$2'=='d') {		define $6 0	define $7 25		#y=d,Q1/4 kpc
+	    if ($3>1 && $3<4) {	define $6 0	define $7 12} }		#y=d,Q2-3
+	# Now treat YX diagrams, all in kpc
+	if ('$2'=='y') {	define $6 (-.5)		define $7 20.4	#y=X,Q1/4 spiral default
+	    if ($dospir) {define $9 ('YXall') define $4 (-12.5)	define $5 3	#x=Y,Q1/4, default
+	    } else {define $9 ('YX$3'+'Q') define $4 (-12)	define $5 0.55	#x=Y,Q3-4 non-spiral subdefault
+		if ($3>0 && $3<3){	define $4 (-0.55)	define $5 12 }	#x=Y,Q1-2
+		if ($3>1 && $3<4){	define $6 (-12)		define $7 0.3}}	#y=X,Q2-3; all cases x,y
+	    } else {define $9 ('l$2$3'+'Q')}			# non-spiral suffix
+	# Thus, file label outputs $8,$9 will consist of a curve type (ftyp for
+	# s,h,t,x,etc) and a suffix (lV/ld/YXnQ/YXall).
+
+kinmod 9 # Define kinematic model labels & modifiers.  Sole input $1 is the two-char
+	# kinematic code; $2-$3 are outputs km,klabel, & parameters $4-$9 = Un,Vn,Wn,
+	# Up,Vp,Wp are carried in and may or may not be modified.
+	define k1 (substr('$1',0,1))	if (strlen('$1')>1) {	# split into 2 codes..
+	define k2 (substr('$1',1,1))	}else{ define k2 ('') }	#..which become EVs
+	if ('$k1'=='i') {define $2 ('iau')  define $3 ('IAU')	# keep IAU
+	    }else{	# all non-IAU models: corrections can be scaled/tapered
+		if ($sfs==0) {define tprlab ('')} else {define tprlab ('st')}
+		if ('$!stS'=='1.80') {define tprlab ('st1')}	# $3 taper info..
+		if ('$!stS'=='2.25') {define tprlab ('st2')}	#..given separately
+		if ('$!stS'=='3.00') {define tprlab ('st3')}	#
+		# Start with BeSSeL corretions, then modify these
+		define $4 10.6	define $5 10.7	define $6 7.6	# actual new SM, R+19
+		if ('$k1'=='b') {define $2 ('bes-$tprlab')	define $3 ('BeSSeL')
+		   if ('$k2'=='t') {define $2 ('bt-$tprlab')	define $3 ('B+ThrUMMS')}
+		   if ('$k2'=='f') {define $2 ('btf-$tprlab')	define $3 ('B+ThrUMMS+FUGIN')}}
+		if ('$k1'=='g') {define $2 ('bg-$tprlab')	define $3 ('B+Gaia')
+		   if ('$k2'=='t') {define $2 ('bgt-$tprlab')	define $3 ('BG+ThrUMMS')}
+		   if ('$k2'=='f') {define $2 ('bgtf-$tprlab')	define $3 ('BG+ThrUMMS+FUGIN')}}
+		if ('$k1'=='v') {define $2 ('bv-$tprlab')	define $3 ('B+VERA')
+		   if ('$k2'=='t') {define $2 ('bvt-$tprlab')	define $3 ('BV+ThrUMMS')}
+		   if ('$k2'=='f') {define $2 ('bvtf-$tprlab')	define $3 ('BV+ThrUMMS+FUGIN')}}
+		if ('$k2'=='t') { #ThrUMMS extra SM, assumed to be on top of b,g,v.  Net
+		    define $7 -8.5	define $8 -5	define $9 0 }	# change to IAU-SM =
+		#     Unet=-8.17	Vnet=-9.62	Wnet=-0.14	# Un+Up-U0; VERSION 0
+		if ('$k2'=='f') { #Thr+FUGIN alternative extra SM, on top of others
+		#    define $7 -8.5	define $8 -1	define $9 0	# ver.1
+		#    define $7 -8.5	define $8 3	define $9 0	# ver.2
+		#    define $7 -6.5	define $8 3	define $9 0	# ver.3
+		#    define $7 -7.3	define $8 3	define $9 0	# ver.4
+		#    define $7 -7.3	define $8 1	define $9 0	# ver.5
+		    define $7 -7.3	define $8 -1	define $9 0	} }	# ver.6
+		#     Unet=-6.97	Vnet=-5.62	Wnet=-0.14		# ver.6
+
+spirlab 9 # Define various labels and variables' DEFAULT values for spiral arm cases. 
+	# Single input is spiral arm code $1, allowed values are as listed.  Outputs are
+	# remaining params, up to 8:	$2 name of arm ,	$3 clr for ann file,
+	#		$4 desc code,	$5 rw % arm half-width,	$6 ci for SMplot colour.
+	# Arm Start: $7 rr0 radius!=R0,	$8 bt0 beta(rad),	$9 psi0 pitch angle(rad).
+	# For the ann file colour $3, must protect any space in colour name with ''
+	if ('$1'=='s') {	define $2 "custom"	define $3 "grey50"
+		define $4 "s"	define $5 (0.05)	define $6 0
+		define $7 4.5	define $8 0	define $9 (10*pi/180)	}
+	if ('$1'=='3k') {	define $2 "3kpc"	define $3 "gold"
+		define $4 "3kpc"  define $5 (.18/3.52)	define $6 8
+		define $7 (3.52*$R0/8.15) define $8 (15*pi/180)	define $9 (-4.2*pi/180)	}
+	if ('$1'=='N') {	define $2 "Norma"	define $3 "red"
+		define $4 "Norma"  define $5 (.14/4.46)	define $6 3
+		define $7 (4.46*$R0/8.15) define $8 (18*pi/180)	define $9 (-1*pi/180)	}
+	if ('$1'=='S') {	define $2 "Scutum-Centaurus"	define $3 "royal blue"
+		define $4 "SctCen" define $5 (.23/4.91)	define $6 5
+		define $7 (4.91*$R0/8.15) define $8 (23*pi/180)	define $9 (14.1*pi/180)	}
+	if ('$1'=='C') {	define $2 "Sagittarius-Carina"	define $3 "magenta"
+		define $4 "SgrCar" define $5 (.27/6.04)	define $6 7
+		define $7 (6.04*$R0/8.15) define $8 (24*pi/180)	define $9 (17.1*pi/180)	}
+	if ('$1'=='B'||'$1'=='Br') {define $2 "CODEX barred"	define $3 "red" #or "magenta" #or "brown"
+		define $4 "Barred"  define $5 (0.05)	define $6 6 #=cyan
+		define $7 1	define $8 (47*pi/180)	define $9 (85*pi/180)
+	    if ('$1'=='Br') {define $2 "Ragged bar"		#ragged options
+		define $4 "ragBar"	define $8 (50*pi/180)	}}
+
+rblvd 9	# Trigonometric conversion rb->ldV.  Parameters rr0/in/out,bt0,psi0, from
+	# the main program are taken as environment variables (EVs) here to derive
+	# the spiral coordinate vectors rrr(kpc) & bbeta(radians) = structure
+	# of the arm.  From these, l,v,d are also redefined as functions of the
+	# EVs.  Only 1 possible output since results immediately plotted and/or
+	# written.  Assumes box, colours, etc have already been set up.
+	#				# USETABE set rrr = $1, set bbeta = $2
+	# Input 1 defines the spiral arm code; B/Br are the only ones that matter
+	define RR0 $2	define THTH $3		# Inputs 2(kpc) and 3-5(km/s) define
+	define UUnet $4	define VVnet $5		# MW scale and solar motion kmodel
+	define dtyp $6		# Input 6 specifies diagram to plot: v=lV, d=ld, y=YX
+	define Alab ('$7')	define colour ($8)	# 7-8 are used if writing anno-
+	#echo A10 $Alab $colour				# tations files for use in kvis.
+	# $9 is the ending radius of the pitch angle decrease for $1=B/Br, or of the
+	#						# spiral otherwise.
+	# First decrement beta by degrees as the independent variable of a log-spiral
+	set bdeg = $($bt0*180/pi),-180,-1	# beta in degrees
+	set bbeta = bdeg*pi/180			# radians
+	set pts = 0,$(dimen(bbeta)-2)		# a counter, up to dim(bbeta)-1
+	set rrr = bbeta*0+$rr0			# Start rrr as a circle, and..
+	set psi = rrr*0+$psi0			# ..psi fixed for all beta
+	#
+	# Now build into a spiral, with special treatment for a variable psi
+	define bend 0	define stmod 1		# default is a constant delta-psi
+	foreach i pts {
+	    if ('$1'=='B'||'$1'=='Br') {
+		if (!$?pstep) {define pstep (1.33*pi/180)}	# radians, for a variable psi
+		if (!$?rrin) {define rrin 1}\n		if (!$?rrout) {define rrout 7}	#need to guess!
+	#	define psivaries (rrr[$i]>$rrin && rrr[$i]<$rrout)	# original, too hard
+	#	define psivaries (rrr[$i]>$rrin && psi[$i]>15*pi/180 )	# 15deg is a nominal spiral
+		define psivaries (rrr[$i]>$rrin && bdeg[$i]>-82 )	# another option
+		if ('$1'=='Br') {	# with a variable delta-psi/ragged bar
+	#	    define sharp (rrr[$i]>4  && rrr[$i]<5.4)	define stmod ($sharp ?  2   : $stmod)
+	#	    define open (rrr[$i]>5.4 && rrr[$i]<6.5)	define stmod ($open  ? -0.15 : $stmod)
+	#	    define soft (rrr[$i]>6.5)			define stmod ($soft  ? 0.05 : $stmod)
+		    define sharp (bdeg[$i]<=34 && bdeg[$i]>16)	define stmod ($sharp ?  2   : $stmod)
+		    define soft  (bdeg[$i]<=16  && bdeg[$i]>0)	define stmod ($soft  ? 0.05 : $stmod)
+		    define open  (bdeg[$i]<=0  && bdeg[$i]>-20)	define stmod ($open  ? -0.5 : $stmod)
+		    define soft2 (bdeg[$i]<=-20)		define stmod ($soft2 ? 0.12 : $stmod) }
+		set psi[$i+1] = ($psivaries) ? psi[$i]-($pstep*$stmod) : psi[$i]
+		if (psi[$i+1] != psi[$i]) {define bend ($i+1)} }
+	    set rrr[$i+1] = rrr[$i]*(1 + pi/180*tan(psi[$i]))	# <-- for constant psi too
+	}
+	if ('$1'=='B' ) {print monbarpar.dat {rrr bbeta psi}}	# plot later [kpc,rad,rad]
+	if ('$1'=='Br') {print ragbarpar.dat {rrr bbeta psi}}	#   "	 "	"	"
+	echo final psi = $(psi[$(dimen(rrr)-1)]*180/pi) deg
+	if ($bend>0) {define $9 (rrr[$bend])			# sole SM output
+		echo [psi fixed from (r,beta) = ($(rrr[$bend]),$(bbeta[$bend]*180/pi)) at index $bend]
+	}else{	define $9 (rrr[$(dimen(rrr)-1)])	}
+	# Add spiral arm widths (inner & outer) to r-vectors by a simple scaling,
+	# and plot them with dotted lines below
+	set rrm = rrr*(1-$rw)		define Alabin ('$Alab'+'in')
+	set rrp = rrr*(1+$rw)		define Alabout ('$Alab'+'out')
+	#
+	# Now convert each spiral(=rr*),bbeta to l,d and then compute Vlsr for solar
+	# motion.  All quantities here are ultimately functions of beta, not l.
+	foreach spirrr ( rrr rrm rrp ) {   define zr ($spirrr[0])
+					   #echo $zr $rrin	# ---Diag for 4Q---
+		set rsub = $spirrr*cos(bbeta)			#	bbeta<0
+		set dsub = $RR0-rsub				#	.
+		set strut = $spirrr*sin(bbeta)			#	|`
+		set l = atan(strut/dsub)			# rsub	| `  rrr
+	#	set l = l<1 ? 2*pi+l : l	# fudge for kvis	|  `
+		set d = sqrt(dsub**2+strut**2)			#  RR0	|---* strut<0
+		set dr = d/$RR0					#	|  /
+		set coslaw = sqrt(1+dr**2-2*dr*cos(l))		# dsub	| /  d (kpc)
+		set XX = d*cos(l)	set YY = d*sin(l)	#	|/
+		# GRC: flat or URC?				#	.
+		if ('$grc' == 'flat') {				#	l<0 (radians)
+			set vt = $THTH*sin(l) * (1/coslaw -1)	
+		}else{	#Get Vrot as fn of rrr(beta,$rr0,$psi), a fixed spiral
+	 		gourc $spirrr $RR0 $THTH Vrot
+		#	set cslwchk = coslaw if (coslaw>0)
+		#	define fu1 (dimen(coslaw))	define fu2 (dimen(cslwchk))
+		#	echo $fu1 $fu2
+			set vt = sin(l) * (Vrot/coslaw - $THTH) }
+		set SMscl = 1-$sfs*dr/(dr+$sfn)			# see scalefn
+		set vlsr = vt - (SMscl)*($VVnet*sin(l) + $UUnet*cos(l))
+		#	Results (units): l (radians)	vlsr (km/s)	d,XX,YY (kpc)
+		# Plot 'em all
+		set ldeg = l*180/pi	\n	if ($zr!=$rrin) {ltype 1}
+		if ('$dtyp'=='v') {connect ldeg vlsr}	\n	#echo $(dimen(l)) $(dimen(ldeg))
+		if ('$dtyp'=='d') {connect ldeg d}	\n	#echo $(dimen(vlsr)) $(dimen(d))
+		if ('$dtyp'=='y') {connect YY XX}	\n	ltype 0
+		if ($quad==3 || $quad==4) {define dowrap 1} else {define dowrap 0}
+		# Write an annotations file?		(dowrap always 0 for YX plots)
+		if ($doann) {	set d = d if (ldeg>$llo && ldeg<$lhi)		#echo $llo $lhi
+			set vms = vlsr*1000 if (ldeg>$llo && ldeg<$lhi)		#vecminmax ldeg l1 l2
+			    set ldeg = ldeg if (ldeg>$llo && ldeg<$lhi)		#echo $l1 $l2
+		    if ('$dtyp'=='v') {if ($zr==$rrin) {annwrt $Alab "$!colour" ldeg vms $dowrap}
+					if ($zr<$rrin) {annwrt $Alabin "$!colour" YY XX 0}
+					if ($zr>$rrin) {annwrt $Alabout "$!colour" YY XX 0} }
+		    if ('$dtyp'=='d') {if ($zr==$rrin) {annwrt $Alab "$!colour" ldeg d $dowrap}
+					if ($zr<$rrin) {annwrt $Alabin "$!colour" YY XX 0}
+					if ($zr>$rrin) {annwrt $Alabout "$!colour" YY XX 0} }
+		    if ('$dtyp'=='y') {if ($zr==$rrin) {annwrt $Alab "$!colour" YY XX 0}
+					if ($zr<$rrin) {annwrt $Alabin "$!colour" YY XX 0}
+					if ($zr>$rrin) {annwrt $Alabout "$!colour" YY XX 0} } }
+		}	#~100 lines
+
+helio 9	# Trigonometric conversion.  The diagram type & quadrant are implicitly
+	# environment variables.
+	# Case 1: YX coords.  The hd curves are simple circles & plotting that
+	# is boring, so only write an .ann file, which is non-trivial for kvis.
+	# Case 2: lV->ld coords, to plot heliocentric curves automatically.
+	# Actually does this in reverse, ie, using fixed d to define curves in
+	# (l,V) space.  No SuperMongo outputs, just immediate plots and, if asked,
+	# *.ann files.	Inputs:
+	define dst ('$1')	# starting distance (can be negative)
+	define dlp1 ($2+1)	# $2 is ending distance, +1 for looping
+	define cli $3		# starting SM colour
+	define ar0 $4		define tht0 $5		# R0,Th0
+	set lvec = $6		# l-vector, radians
+	define RCtyp $7		# rotation curve type, flat or urc
+	define Unett $8		define Vnett $9		# SM corrections
+	if ($quad==3 || $quad==4) {define dowrap 1} 	else	{define dowrap 0}
+	#
+	# Get on with it!!	Easier than it looks...
+	define di (atof($dst))	# float of dst string
+	while {$di < $dlp1} {	# Loop here: 1st handle fractional negative start
+	    if ($di<0) {define zot ($di+1)} else {define zot 0}
+	    if ($di==int($di)) {define ds $di} else {round $di 1 ds}
+	    # Case 1
+	    if ('$diag'=='y') { # Ignore most of the inputs except ds,di
+		set foo = $llo,$lhi,0.4 	set lvec=foo*pi/180
+		set XXX = $di*cos(lvec) 	set YYY = $di*sin(lvec)
+		if ($doann) {	# write a single .ann for each $di
+		   define clr "light grey"
+		   if ($ds==5*int($ds/5)) {define clr "black"}
+		   define Alabel ('helio$ds.YX')   echo writing $Alabel.ann
+		   annwrt $Alabel "$!clr" YYY XXX 0	}	# dowrap always 0
+		define di ($di-$zot+1)	# makes next di=0 after any -ve start
+	    } # Case 2
+	    if ('$diag'=='v') { 	# More complicated
+		if ($cli<0) {ctype 6} else {ctype $cli}
+		# Need V starting from a single d with a general (non-flat)
+		# rotation curve, eg URC, all as a function of l.
+		define dr ($di/$ar0)	# single fractional distance, R0 units
+		set coslaw = sqrt(1+$dr**2 - 2*$dr*cos(lvec))
+		if ('$RCtyp' == 'flat') {	# Is RC flat or a fn of GC radius?
+			set vvvo = $tht0 * sin(lvec) * (1/coslaw -1)
+		 }else{	set rg = $ar0*coslaw		# Galactocentric r(l)
+			gourc rg $ar0 $tht0 Vrot	# -> Vrot(l), fixed d
+			set vvvo = sin(lvec) * (Vrot/coslaw - $tht0)	}
+		define SMscl (1-$sfs*$dr/($dr+$sfn))	# see scalefn; now a scalar
+		# Must also correct solar motion UVW wrt LSR for BeS/Thr/etc values.
+		# Correction to data in standard LSR diagrams is OPPOSITE to that
+		# for actual data: formula uses - instead of +.
+		set vvvn = vvvo - ($SMscl)*($Vnett*sin(lvec) + $Unett*cos(lvec))
+		# technically,	(	"	"	"	)*cos(bvec)
+		# should also				- $Wnett * sin(bvec)
+		#
+		# Now plot
+		define dlab ($vlab-0.0377*($di-$zot))	# staggers labels on plot
+		set ldeg = lvec*180/pi
+		connect ldeg vvvn	fputlabel $llab $dlab 6 $ds kpc
+		#
+		# Write a corresponding annotations file for a kvis overlay
+		if ($doann) {set vms = vvvn*1000	# for kvis coords in m/s
+		   if($cli<0) {define clr "grey80"}\n	if($cli==5){define clr "royal blue"}
+		   if($cli==0){define clr "grey50"}\n	if($cli==6){define clr "cyan"}
+		   if($cli==3){define clr "red"}\n	if($cli==7){define clr "magenta"}
+		   if($cli==4){define clr "MediumSeaGreen"}\n if($cli==8){define clr "gold"}
+		   define Alabel ('helio$ds.$RCtyp'+'$km.l$diag'+'Q$quad')
+		   annwrt $Alabel "$!clr" ldeg vms $dowrap
+		   if ($quad<3) {echo "  wrote "$Alabel.ann
+			}else{	echo "  wrote "$Alabel(.wr).ann}
+		}
+		# Reset counters for next distance and colour
+		define di ($di-$zot+1)	# makes next di=0 after any -ve start
+		if ($di>$ar0) {ltype 1}	# dotted far distances
+		if ($di==10) {define vlab 0.77	define llab 0.91}  # 2nd column
+		define cli ($cli+1)	if ($cli==1) {define cli 3}
+					if ($cli==9) {define cli 0}
+	    }
+	}	ctype 0		#~75 lines
+
+xylv 9	# Trigonometric conversion xy(l)->dV, to plot xy grid automatically.
+	# Instead of stepping through fixed helio d's, compute V,d along step-
+	# ped x for all y(l), then stepped y for all x(l).  Inputs 1-5: R0(kpc)
+	# TH0,Unet,Vnet(km/s) and lrad, equivalent to 300-360 degr for 4Q.  No
+	# SuperMongo outputs since results immediately plotted ($6) and option-
+	# ally also saved as annotations files ($7) for use in kvis.  Assumes
+	# box,colours,etc have already been set up.
+	define R00 $1	define TH00 $2	define Unett $3 	define Vnett $4
+	set lradd=$5	define dtyp $6	define kmod "$7" 	#define doan 0
+	define xlim $8	define ylim ($9)	ex 0.45
+	#echo inputs to xylv: $1 $2 $3 $4 $5 $6 $7 $8 $9
+	if ($quad==3 || $quad==4) {define dowrap 1	define y (-.01)
+		} 	else	{define dowrap 0	define y (.01)}
+	if ($quad==2 || $quad==3) {	define x (.3)
+		} 	else	{	define x (-.3)}
+	#
+	# Draw blue x-grid first; dx,dy,dr are fractional
+	while {$(abs($x))<=$(abs($xlim))} {	# xlim = xmax>0 in Q1,4; = xmin<0 in Q2,3
+		define dx ($x/$R00)		# dx also = dr*cos(lradd)
+		set dy = $dx*tan(lradd)		# dy for each lradd at dx
+		set dr = sqrt($dx**2+dy**2)	# dr @each lradd
+		set coslaw = sqrt(1+dr**2-2*$dx) # then each V-radial, Vlsr
+		if ('$grc' == 'flat') {	# Is RC flat or a fn of GC radius?
+			set vr = $TH00*sin(lradd) * (1/coslaw-1)
+		 }else{	set rg = $R00*coslaw	# G'centric r as fn of l
+			gourc rg $R00 $TH00 Vrot # -> Vrot as fn of l, fixed d
+			set vr = sin(lradd) * (Vrot/coslaw - $TH00)	}
+		set SMscl = 1-$sfs*dr/(dr+$sfn)	# see scalefn
+		set vrx = vr - (SMscl)*($Vnett*sin(lradd) + $Unett*cos(lradd))
+		set ldegr = lradd*180/pi	#echo x=$x
+		set DD = dr*$R00 \n		if ($($x*($xlim))>=0) {ctype 5} else {ctype 6}
+		if('$dtyp'=='v'){connect ldegr vrx	define thrl ($diml/3)
+				angle $((vrx[$thrl-5]-vrx[$thrl+5])*$diml/120)
+				define glab ((vrx[$thrl]-$ylo)/($yhi-$ylo))
+			#	echo vrange from $vmin to $vmax km/s, glab = $glab
+			}else{	connect ldegr DD	define dowrap 0	#YX plot
+				angle $((DD[$thrl-5]-DD[$thrl+5])*$diml/10)
+				define glab (DD[$thrl]/$yhi)	}
+		if ($x==int($x)) {define xs $x} else {round $x 1 xs}
+		if ((2*int($x/2))==$x) {fputlabel 0.67 $glab 4 x=$xs kpc}
+		#
+		if ($doann) {# Save each gridline as an annotations file for kvis,
+			# for *both* plot types regardless of dtyp.
+			set vmet = vrx*1000		# kvis/annot coords in m/s
+			define Alab ('x$xs.$grc'+'$kmod.lv'+'Q$quad')	#echo $Alab
+			annwrt $Alab "royal blue" ldegr vmet $dowrap
+			define Alab ('x$xs.$grc'+'$kmod.ld'+'Q$quad')	#echo $Alab
+			annwrt $Alab "royal blue" ldegr DD $dowrap	}
+		# Make next x=0 after any backstart
+		if ($xlim>0) {if ($x<0) {define x 0} else {define x ($x+1)}}	# Q1,4
+		if ($xlim<0) {if ($x>0) {define x 0} else {define x ($x-1)}}	# Q2,3
+		if ((abs($x))<.0001) {define x 0}	# make sure!
+	}
+	# Draw magenta y-grid next; keep track of signs in Q1,2,3,4
+	while {$(abs($y))<=$(abs($ylim))} {	# ylim = ymin<0 in Q3,4; = ymax>0 in Q1,2
+		define dy ($y/$R00)		# dy also = dr*sin(lradd)
+		set dx = $dy/tan(lradd==0 ? 1e-3 : lradd)   # dx for each lradd at dy,
+				 		# including catch for div-by-0 at y=0
+		set dr = sqrt(dx**2+$dy**2)	# dr @each lradd
+		set coslaw = sqrt(1+dr**2-2*dx)	# then each Vradial, Vlsr
+		if ('$grc' == 'flat') {	# Is RC flat or a fn of GC radius?
+			set vr = $TH00*sin(lradd) * (1/coslaw-1)
+		 }else{	set rg = $R00*coslaw	# G'centric r as fn of l
+			gourc rg $R00 $TH00 Vrot # -> Vrot as fn of l, fixed d
+			set vr = sin(lradd) * (Vrot/coslaw - $TH00)	}
+		set SMscl = 1-$sfs*dr/(dr+$sfn)	# see scalefn
+		set vry = vr - (SMscl)*($Vnett*sin(lradd) + $Unett*cos(lradd))
+		set ldegr = lradd*180/pi	#echo y=$y
+		set DD = dr*$R00 \n		if ($($y*($ylim))>=1) {ctype 7} else {ctype 8}
+		if('$dtyp'=='v'){connect ldegr vry	define midl ($diml/2)
+				angle $((vry[$midl-5]-vry[$midl+5])*$diml/120)
+				define glab ((vry[$midl]-$ylo)/($yhi-$ylo))
+			}else{	connect ldegr DD	define dowrap 0	#YX plot
+				angle $((DD[$midl-5]-DD[$midl+5])*$diml/10)
+				define glab (DD[$midl]/$yhi)	}
+		if ((2*int($y/2))==$y) {fputlabel 0.5 $glab 8 y=$y kpc}
+		if ($y==int($y)) {define ys $y} else {round $y 1 ys}
+		#
+		if ($doann) {# Save each gridline as an annotations file for kvis,
+			# for *both* plot types regardless of dtyp.
+			set vmet = vry*1000		# kvis/annot coords in m/s
+			define Alab ('y$ys.$grc'+'$kmod.lv'+'Q$quad')	#echo $Alab
+			annwrt $Alab magenta ldegr vmet $dowrap
+			define Alab ('y$ys.$grc'+'$kmod.ld'+'Q$quad')	#echo $Alab
+			annwrt $Alab magenta ldegr DD $dowrap	}
+		#if ($y>0) {define zot ($y-1)} else {define zot 0}	# not sensible
+		# Make next y an integer after any fractional start
+		if ($ylim<0) {define y (int($y-1))} else {define y (int($y+1))}
+	}
+	ex 0.7	angle 0	ctype 0		ltype 1
+	rel 360 0	dra 300 0	ltype 0	# Vlsr=0 for ref	# ~90 lines
+
+annwrt 5 # Write overlay vectors to an annotations file.  Inputs are .ann filename to be
+	# written, overlay colour, 2 vectors, and wrap option for quadrants 3-4.
+	set lldeg.or.Ykpc = $3	set Vms.or.DkpcX = $4		# vector names for file
+	print   "$!1".ann 'coord w\ncolour $!2\nPA sky\n' { }
+	print + "$!1".ann 'clines <- move to 1st coord\n' { }
+	print + "$!1".ann '\t%8.4f\t%g,\\ \n' {lldeg.or.Ykpc Vms.or.DkpcX}
+	if ($5) {set lldeg.or.Ykpc = lldeg.or.Ykpc - 360 
+		print   "$!1".wr.ann 'coord w\ncolour $!2\nPA sky\n' { }
+		print + "$!1".wr.ann 'clines <- move to 1st coord\n' { }
+		print + "$!1".wr.ann '\t%8.4f\t%g,\\ \n' {lldeg.or.Ykpc Vms.or.DkpcX}
+	}
+
+plurc 2	# Plot URC for standard parameters, but now scaled to various Th0 & R0,
+	# depending on KM for solar motion.  Two inputs are R0 (kpc) and Th0
+	# (km/s) for MW; output is plotfile urc.eps
+	define arnought $1 		define thta $2
+	round $arnought 2 sarnought	round $thta 1 stheta
+	define codedir ('/Users/peterb/data/otfsuite')		# for mac
+	re "$!codedir/lvfeat.sm"				# for gourc script
+	re "$!codedir/comp.sm"					# for round script
+	set grad = 0.1,15,0.1		set THr = grad*0
+	gourc grad $arnought $thta THr
+	dev postlandfile urc.eps	era	ctype 0	ltype 0	ptype 4 1
+	ex 0.9	lweight 2	limits grad THr		ticksize 0 0 0 0
+	box	connect grad THr	points grad THr
+	xlabel Galactocentric radius (kpc)
+	ylabel circular rotation speed (km/s)
+	fputlabel 0.5 1.02 8 Universal Rotation Curve
+	fputlabel 0.5 0.5 8 R\d0=$sarnought kpc \gQ\d0=$stheta km/s
+	dev null\n	#quit
+
+gourc 4	# Universal Rotation Curve from Reid et al 2019, using parameters a2,a3
+	# in Persic et al 1996 formulation:
+	# a2 = Ropt/R0 (=0.96 in R+19), where Ropt=3.2*Rscln encloses 83% of a
+	#	galaxy's light and is a fixed number for the MW.  But then a2
+	#	needs to change if R0 changes from R+19 value of 8.15 kpc.
+	# a3 = 1.5*(L/L*)^0.2 = 1.62 is an estimate of MW's luminosity and also
+	#	fixed, ie not affected by KM or changes in R,TH.
+	# Inputs are:
+	# $1 = gcr, a vector of Galactocentric radii (kpc) (could be length 1)
+	# $2 = R0d, Sun's Galactocentric distance (kpc), ie R0 elsewhere
+	# $3 = TH0v, rotation speed at R0 (km/s) from a solar motion KM
+	# Output:
+	# $4 = thcr is circular rotation speed (km/s) for gcr vector.
+	#
+	# Will sometimes need to use this routine iteratively to solve for both
+	# gcr & thcr.
+	#
+	# Set up
+	set gcr = $1	define Ropt (0.9595*8.15)	#= 7.82; => Rscln=2.44 kpc
+	define R0d $2	define lamb ((1.62/1.5)**5)	#= L/L* = 1.469328077 for MW
+	set rho = gcr/$Ropt	#=1/a2 @R0; for R0=8.24, new a2=$Ropt/$R0d=0.949, etc.
+	define TH0v $3		# rescales URC from R+19 with Th0 = 236.3
+	#
+	# Calculate
+	define term0 (200.3*$TH0v/236.3)
+	define term1 ($term0*$lamb**0.41)		#= 234.17940295 for R+19
+	define top (0.75 * exp(-0.4*$lamb))		#= 0.416689765
+	define bot (0.47 + 2.25*$lamb**0.4)		#= 3.0944
+	define term2 (sqrt( 0.8 + 0.49*lg($lamb) + ($top/$bot) )) #= 1.008239808
+	set top3 = 1.97*rho**1.22			#~ 2r^1.2
+	set bot3 = (rho*rho+0.61)**1.43			#~ r^3
+	set term3 = (0.72 + 0.44*lg($lamb)) * top3/bot3	#= .7935322621*top3/bot3 ~ 1.6r^-1.7
+	set top4 = rho*rho				#= r^2
+	set bot4 = rho*rho + 2.25*$lamb**0.4		#= r^2 + 2.6244
+	set term4 = 1.6 * exp(-0.4*$lamb) * top4/bot4	#= .88893816508*top4/bot4 ~ .9r^2/(r^2+2.6)
+	set thcr = $term1/$term2 * sqrt(term3+term4)	#= 232.26557926*sqrt(...)
+	set $4 = thcr		# km/s
+
+scalefn 2 # Plot sample scale functions for Vlsr conversion to non-IAU uvw.  The 2 inputs
+	# are $1 = distance-scalar in numerator, and $2 = R0-scalar in denominator.  The
+	# Sun-GC distance R0 is used as an EV.  The output is plotfile scale.eps, use it
+	# to choose best values for S,n in lvfeat.  Ultimately, we want a scale=1 (pure
+	# LSR) at Sun's location (d=0), decreasing through 0 as d rises, to ~ -0.5 at
+	# d=R0 (approximating the GSR) in order to symmetrise the observed tangent vels
+	# on the pseudo-LSR IAU scale.
+	define codedir ('/Users/peterb/data/otfsuite')		# for mac
+	re "$!codedir/comp.sm"					# for round script
+	# Check inputs
+	if ($?1) {define S ($1)} else {define S 2.25}	\n	round $S 2 stS
+	if ($?2) {define nn ($2)} else {define nn 0.5}	\n	round $nn 2 stnn
+	if (!$?R0) {define R0 8.547}
+	# Now plot
+	dev postlandfile scale.eps \n	era	set d = 0,20,0.1	ex 1.2
+	set sc = 1 - ($S*d)/(d+$nn*$R0)		limits d sc	lweight 3	box
+	define Rsc (1 - ($S)/(1+$nn))	xlabel distance \id (kpc)
+	define d0 ($nn*$R0/($S-1))	ylabel \iV\\dLSR\\u conversion scale
+	connect d sc	#
+	# Write labels
+	fputlabel 0.2 0.85 6 scale = 1 -         ,  where
+	fputlabel 0.45 0.88 6 \iS\id	\n	fputlabel 0.7 0.88 6 \iS = $stS
+	fputlabel 0.41 0.82 6 (\id+\in\iR\d0)\n	fputlabel 0.7 0.82 6 \in = $stnn
+	rel $($R0-1) $Rsc	dra $($R0+1) $Rsc	rel $($R0+1.4) $Rsc
+	putlabel 6 scale at \iR\d0 #= $R0
+	rel $d0 0.15	dra $d0 -0.15	rel $d0 -0.18		angle -90
+	ex 0.8		putlabel 6 distance where scale=0\n	angle 0
+	rel 8 0.8	dra 10.6 0.8		dev null
+
+pltsp 1 # Utility script to plot spiral arm parameters, particularly for a barred
+	# spiral with variable delta-psi.  Filename and units kpc,rad,rad assumed.
+	# Only input is bar type, B or Br.
+	if ('$1'=='B' ) {data monbarpar.dat	define title ('Barred spiral parameters')}
+	if ('$1'=='Br') {data ragbarpar.dat	define title ('Ragged barred spiral parameters')}
+	read {gradius 1 gbeta 2 gpsi 3}
+	set dbeta = gbeta*180/pi	vecminmax dbeta bmin bmax
+	set dpsi = gpsi*180/pi		vecminmax dpsi psmin psmax
+	vecminmax gradius rmin rmax	echo $bmin $bmax; $rmin $rmax; $psmin $psmax
+	if ('$1'=='B' ) {dev postlandfile monbarpar.eps}
+	if ('$1'=='Br') {dev postlandfile ragbarpar.eps}
+	ptype 4 1	ctype 0	ltype 0	lweight 3	era	ex 0.9
+	limits 55 -110 gradius	connect dbeta gradius	box 1 2 0 4	ticksize 0 0 0 0
+	limits 55 -110 dpsi	xlabel Galactocentric longitude \gb [deg]
+	ylabel Galactocentric radius \iR [kpc]	\n	ctype 3
+	connect dbeta dpsi	box 4 4 4 2	ticksize 0 0 0 0	angle 90
+	fputlabel 0.97 0.5 5 Pitch Angle \gy [deg]	\n	ctype 0		angle 0
+	ltype 1		rel 0 0		dra 0 90	rel 25 75	putlabel 5 1Q
+	rel -55 75	putlabel 5 4Q\n	fputlabel 0.5 1.02 8 $title\n	dev null
